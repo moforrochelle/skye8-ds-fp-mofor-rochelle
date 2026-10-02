@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <button id="btn">Start</button>
+  <pre id="log"></pre>
+
+  <script>
+
+const btn = document.getElementById("btn");
+const log = document.getElementById("log");
+
+btn.onclick = async () => {
+  try {
+    await navigator.mediaDevices.getUserMedia({ audio: true });
+    log.textContent = "mic granted";
+  } catch (e) {
+    log.textContent = "error: " + e.message;
+  }
+};
+    
+  </script>
+</body>
+</html>
