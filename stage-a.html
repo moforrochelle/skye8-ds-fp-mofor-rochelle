@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <button id="btn">Start</button>
+  <pre id="log"></pre>
+
+  <script>
+    const btn = document.getElementById("btn");
+    const log = document.getElementById("log");
+
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const rec = new SR();
+    rec.lang = "en-US";
+    rec.interimResults = true;
+    rec.continuous = true;
+
+    rec.onresult = (e) => {
+      let text = "";
+      for (const r of e.results) text += r[0].transcript + " ";
+      log.textContent = text;
+    };
+
+    rec.onerror = (e) => {
+      log.textContent = "error: " + e.error;
+    };
+
+    btn.onclick = () => {
+      rec.start();
+      log.textContent = "listening...";
+    };
+  </script>
+</body>
+</html>
