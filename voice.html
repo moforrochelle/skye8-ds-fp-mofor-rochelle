@@ -10,7 +10,7 @@
   </select>
   threshold <input id="thr" type="number" step="0.01" min="0.5" max="0.999" value="0.90" style="width:70px">
   min pause (s) <input id="floor" type="number" step="0.1" min="0.2" max="1.5" value="0.6" style="width:60px">
-  <label><input type="checkbox" id="intr" checked> interruption</label><br><br>
+  <label><input type="checkbox" id="intr"> interruption (tick before Start; use headphones)</label><br><br>
   <button id="btn">Start</button>
   <button id="cut">I was cut off</button>
   <button id="gap">Gap too long</button>
@@ -103,8 +103,9 @@
       $("prob").textContent = p.toFixed(3);
       const thr = parseFloat($("thr").value) || 0.9;
       const modelSaysDone = p >= thr && (prevCount >= 3 || pause >= 1.0);
-      if (modelSaysDone || pause >= 2.0) {
+      if (modelSaysDone || pause >= 1.5) {
         addLine("  fired: pause " + pause.toFixed(2) + "s, P " + p.toFixed(3) +
+                ", thr " + thr + ", floor " + floor +
                 ", features [" + x.map((v) => +v.toFixed(2)).join(", ") + "]");
         endOfTurn();
       }
@@ -240,7 +241,7 @@
           show("Could not load results/endpoint_model.json: " + e.message);
           return;
         }
-        if (!vad) {
+        if ($("intr").checked && !vad) {
           try {
             vad = await window.vad.MicVAD.new({
               baseAssetPath: "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/",
@@ -258,7 +259,7 @@
             show("Interruption unavailable (" + e.message + "). Continuing without it.");
           }
         }
-        if (vad) vad.start();
+        if (vad && $("intr").checked) vad.start();
         running = true;
         $("btn").textContent = "Stop";
         show("listening...");
