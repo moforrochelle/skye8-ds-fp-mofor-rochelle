@@ -2,12 +2,15 @@
 <html>
 <body>
   <h3>Live voice assistant</h3>
-  <input id="key" type="password" placeholder="Paste Gemini API key" size="40">
+  <input id="key" type="password" placeholder="Paste Gemini API key" size="40"><br>
+  Mode:
   <select id="mode">
     <option value="model">Trained endpointing model</option>
     <option value="timer">1-second silence timer (baseline)</option>
   </select>
-  <input id="thr" type="number" step="0.01" min="0.5" max="0.999" value="0.95" style="width:70px"> threshold
+  threshold <input id="thr" type="number" step="0.01" min="0.5" max="0.999" value="0.90" style="width:70px">
+  min pause (s) <input id="floor" type="number" step="0.1" min="0.2" max="1.5" value="0.6" style="width:60px">
+  <label><input type="checkbox" id="intr" checked> interruption</label><br><br>
   <button id="btn">Start</button>
   <button id="cut">I was cut off</button>
   <button id="gap">Gap too long</button>
@@ -15,6 +18,9 @@
   <p>Pause: <span id="pz">0.0</span> s | P(finished): <span id="prob">-</span></p>
   <pre id="log">page loaded, but the script has not started</pre>
   <pre id="stats"></pre>
+
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.wasm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/bundle.min.js"></script>
 
   <script>
     window.onerror = function (msg, src, line) {
@@ -34,10 +40,11 @@
     rec.interimResults = true;
     rec.continuous = true;
 
-    let M = null;
-    let running = false, busy = false;
-    let heard = "", lastResultAt = 0, prevCount = 0;
+    let M = null, vad = null;
+    let running = false, busy = false, turnDone = true, interrupting = false;
+    let heard = "", lastResultAt = 0, prevCount = 0, speechRunStart = 0;
     let history = [], cuts = 0, gaps = 0, turns = 0;
+    let abortCtl = null, pendingSpeech = 0, streamDone = false, spokeFirst = false, info = null;
 
     function show(msg) { $("log").textContent = msg; }
     function addLine(msg) { $("stats").textContent = msg + "\n" + $("stats").textContent; }
@@ -67,12 +74,12 @@
       lastResultAt = performance.now();
       show("You: " + heard);
     };
-
     rec.onend = () => { if (running && !busy) startRec(); };
     rec.onerror = (e) => {
       if (e.error !== "no-speech" && e.error !== "aborted") show("mic error: " + e.error);
     };
 
+    // Decides every 100 ms whether the speaker has finished.
     setInterval(() => {
       if (!running || busy || !heard) return;
       const pause = (performance.now() - lastResultAt) / 1000;
@@ -81,7 +88,8 @@
         if (pause >= 1.0) endOfTurn();
         return;
       }
-      if (pause < 0.2) return;
+      const floor = parseFloat($("floor").value) || 0.6;
+      if (pause < floor) return;
       const words = heard.toLowerCase().replace(/[^a-z' ]/g, "").split(/\s+/).filter(Boolean);
       const last = words[words.length - 1] || "";
       const x = [
@@ -93,7 +101,7 @@
       ];
       const p = score(x);
       $("prob").textContent = p.toFixed(3);
-      const thr = parseFloat($("thr").value) || 0.95;
+      const thr = parseFloat($("thr").value) || 0.9;
       const modelSaysDone = p >= thr && (prevCount >= 3 || pause >= 1.0);
       if (modelSaysDone || pause >= 2.0) {
         addLine("  fired: pause " + pause.toFixed(2) + "s, P " + p.toFixed(3) +
@@ -102,81 +110,155 @@
       }
     }, 100);
 
-    async function askModel(text) {
+    // Streams the reply and speaks each sentence as soon as it is complete.
+    async function streamReply(text, signal) {
       const user = { role: "user", parts: [{ text }] };
       const contents = [...history, user].slice(-7);
       const res = await fetch(
-        "https://generativelanguage.googleapis.com/v1beta/models/" + MODEL + ":generateContent",
+        "https://generativelanguage.googleapis.com/v1beta/models/" + MODEL + ":streamGenerateContent?alt=sse",
         {
           method: "POST",
+          signal,
           headers: {
             "Content-Type": "application/json",
             "x-goog-api-key": $("key").value.trim(),
           },
           body: JSON.stringify({
             systemInstruction: {
-              parts: [{ text: "You are a voice assistant. Answer in one or two short sentences." }],
+              parts: [{ text: "You are a voice assistant. Keep answers short (one or two sentences) unless the user asks for a long or detailed answer." }],
             },
             contents,
           }),
         }
       );
       if (!res.ok) throw new Error("model error " + res.status + ": " + (await res.text()).slice(0, 300));
-      const data = await res.json();
-      const reply = data.candidates[0].content.parts.map((p) => p.text || "").join("").trim();
-      history.push(user, { role: "model", parts: [{ text: reply }] });
-      return reply;
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "", full = "", sentenceBuf = "";
+      while (true) {
+        const r = await reader.read();
+        if (r.done) break;
+        buf += dec.decode(r.value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, idx).trim();
+          buf = buf.slice(idx + 1);
+          if (line.indexOf("data:") !== 0) continue;
+          let j;
+          try { j = JSON.parse(line.slice(5)); } catch (e) { continue; }
+          const parts = (j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || [];
+          const piece = parts.map((p) => p.text || "").join("");
+          if (!piece) continue;
+          if (!info.tTok) info.tTok = performance.now();
+          full += piece;
+          sentenceBuf += piece;
+          let m;
+          while ((m = /^([\s\S]*?[.!?])\s+/.exec(sentenceBuf))) {
+            speakChunk(m[1]);
+            sentenceBuf = sentenceBuf.slice(m[0].length);
+          }
+        }
+      }
+      if (sentenceBuf.trim()) speakChunk(sentenceBuf);
+      history.push(user, { role: "model", parts: [{ text: full }] });
+    }
+
+    function speakChunk(s) {
+      s = s.trim();
+      if (!s) return;
+      if (!info.tChunk) info.tChunk = performance.now();
+      info.reply += " " + s;
+      show("You: " + info.user + "\nAssistant:" + info.reply);
+      const u = new SpeechSynthesisUtterance(s);
+      u.lang = "en-US";
+      pendingSpeech++;
+      u.onstart = () => {
+        if (spokeFirst) return;
+        spokeFirst = true;
+        const now = performance.now();
+        turns++;
+        $("turns").textContent = turns;
+        addLine(
+          "Turn " + turns + " [" + info.mode + "]: total " + Math.round(now - info.tWords) + " ms " +
+          "(endpoint wait " + Math.round(info.tFire - info.tWords) +
+          ", first token " + Math.round(info.tTok - info.tFire) +
+          ", first sentence ready " + Math.round(info.tChunk - info.tTok) +
+          ", speech start " + Math.round(now - info.tChunk) + ")"
+        );
+      };
+      const done = () => { pendingSpeech--; if (streamDone && pendingSpeech <= 0) finishTurn(); };
+      u.onend = done;
+      u.onerror = done;
+      speechSynthesis.speak(u);
+    }
+
+    function finishTurn() {
+      if (turnDone) return;
+      turnDone = true;
+      busy = false;
+      interrupting = false;
+      if (running) startRec();
     }
 
     async function endOfTurn() {
       if (!heard || busy) return;
       busy = true;
-      const text = heard;
-      const tWords = lastResultAt;
-      const tFire = performance.now();
-      const mode = $("mode").value;
+      turnDone = false;
+      info = { user: heard, reply: "", tWords: lastResultAt, tFire: performance.now(),
+               tTok: 0, tChunk: 0, mode: $("mode").value };
       resetTurn();
       rec.abort();
+      abortCtl = new AbortController();
+      pendingSpeech = 0;
+      streamDone = false;
+      spokeFirst = false;
       try {
-        const reply = await askModel(text);
-        const tLlm = performance.now();
-        if (!running) { busy = false; return; }
-        show("You: " + text + "\nAssistant: " + reply);
-        speak(reply, tWords, tFire, tLlm, mode);
+        await streamReply(info.user, abortCtl.signal);
       } catch (err) {
-        show("Error: " + err.message);
-        busy = false;
-        if (running) startRec();
+        if (err.name !== "AbortError") show("Error: " + err.message);
       }
+      streamDone = true;
+      if (pendingSpeech <= 0) finishTurn();
     }
 
-    function speak(reply, tWords, tFire, tLlm, mode) {
-      const u = new SpeechSynthesisUtterance(reply);
-      u.lang = "en-US";
-      u.onstart = () => {
-        const now = performance.now();
-        turns++;
-        $("turns").textContent = turns;
-        addLine(
-          "Turn " + turns + " [" + mode + "]: total " + Math.round(now - tWords) + " ms " +
-          "(endpoint wait " + Math.round(tFire - tWords) + ", model " + Math.round(tLlm - tFire) +
-          ", speech start " + Math.round(now - tLlm) + ")"
-        );
-      };
-      u.onend = () => { busy = false; if (running) startRec(); };
-      u.onerror = u.onend;
-      speechSynthesis.speak(u);
+    function interrupt() {
+      interrupting = true;
+      const t0 = speechRunStart || performance.now();
+      if (abortCtl) abortCtl.abort();
+      speechSynthesis.cancel();
+      addLine("  INTERRUPTED: assistant stopped " + Math.round(performance.now() - t0) +
+              " ms after you started talking");
     }
 
     $("btn").onclick = async () => {
       if (!running) {
         if (!$("key").value.trim()) { show("Paste your API key first"); return; }
+        show("loading...");
         try {
           if (!M) M = await (await fetch("results/endpoint_model.json")).json();
         } catch (e) {
           show("Could not load results/endpoint_model.json: " + e.message);
           return;
         }
+        if (!vad) {
+          try {
+            vad = await window.vad.MicVAD.new({
+              baseAssetPath: "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/",
+              onnxWASMBasePath: "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/",
+              positiveSpeechThreshold: 0.8,
+              onFrameProcessed: (p) => {
+                if (p.isSpeech > 0.5) { if (!speechRunStart) speechRunStart = performance.now(); }
+                else if (p.isSpeech < 0.3) { speechRunStart = 0; }
+              },
+              onSpeechRealStart: () => {
+                if (busy && !interrupting && $("intr").checked) interrupt();
+              },
+            });
+          } catch (e) {
+            show("Interruption unavailable (" + e.message + "). Continuing without it.");
+          }
+        }
+        if (vad) vad.start();
         running = true;
         $("btn").textContent = "Stop";
         show("listening...");
@@ -184,9 +266,13 @@
       } else {
         running = false;
         $("btn").textContent = "Start";
+        if (vad) vad.pause();
+        if (abortCtl) abortCtl.abort();
         rec.abort();
         speechSynthesis.cancel();
         busy = false;
+        turnDone = true;
+        interrupting = false;
         show("stopped");
       }
     };
