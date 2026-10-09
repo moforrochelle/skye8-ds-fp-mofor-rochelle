@@ -3,102 +3,120 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#101010">
+<meta name="theme-color" content="#fbf7f4">
 <title>Voice assistant</title>
 <style>
-  :root { --bg:#101010; --fg:#f2f2f2; --muted:#8a8a8a; --card:#1a1a1a; --line:#2c2c2c; }
+  :root { --bg:#fbf7f4; --fg:#2a2733; --muted:#8b8697; --line:#ebe5f0; }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body {
     background: var(--bg); color: var(--fg);
-    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    display: flex; flex-direction: column; height: 100dvh;
+    font-family: ui-rounded, "SF Pro Rounded", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    height: 100dvh; overflow: hidden; position: relative;
     padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom);
   }
-  body[data-state="idle"] { --c: #5c5c5c; }
-  body[data-state="listening"] { --c: #2fbf71; }
-  body[data-state="thinking"] { --c: #f0a030; }
-  body[data-state="speaking"] { --c: #4a90ff; }
+  body[data-state="idle"]      { --c1:#ece8f6; --c2:#cdc6e6; --glow:rgba(170,160,205,.45); }
+  body[data-state="listening"] { --c1:#d6f6ec; --c2:#7fd2b6; --glow:rgba(127,210,182,.55); }
+  body[data-state="thinking"]  { --c1:#ffe6d1; --c2:#ffb98a; --glow:rgba(255,185,138,.55); }
+  body[data-state="speaking"]  { --c1:#e4dbff; --c2:#a99bf5; --glow:rgba(169,155,245,.55); }
 
-  .flag { display: flex; height: 4px; }
-  .flag span { flex: 1; }
-  .top { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; }
-  .brand { font-size: 13px; color: var(--muted); letter-spacing: .12em; }
-  .icon-btn { background: none; border: 1px solid var(--line); color: var(--fg);
-              width: 40px; height: 40px; border-radius: 50%; font-size: 18px; cursor: pointer; }
+  .bg { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
+  .bg i { position: absolute; border-radius: 50%; filter: blur(70px); opacity: .75; will-change: transform; }
+  .b1 { width: 320px; height: 320px; background: #ffd6c4; left: -90px; top: -60px; animation: float1 20s ease-in-out infinite; }
+  .b2 { width: 300px; height: 300px; background: #d8ccff; right: -100px; top: 22%; animation: float2 24s ease-in-out infinite; }
+  .b3 { width: 320px; height: 320px; background: #c9f0e3; left: -80px; bottom: -80px; animation: float3 22s ease-in-out infinite; }
+  .b4 { width: 240px; height: 240px; background: #ffd0e0; right: -40px; bottom: -40px; animation: float1 26s ease-in-out infinite reverse; }
+  @keyframes float1 { 0%,100% { transform: translate(0,0); } 50% { transform: translate(40px,30px); } }
+  @keyframes float2 { 0%,100% { transform: translate(0,0); } 50% { transform: translate(-40px,40px); } }
+  @keyframes float3 { 0%,100% { transform: translate(0,0); } 50% { transform: translate(30px,-40px); } }
+
+  .app { position: relative; z-index: 1; display: flex; flex-direction: column; height: 100%; }
+  .top { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; }
+  .brand { font-size: 15px; font-weight: 600; letter-spacing: .02em; }
+  .icon-btn { background: rgba(255,255,255,.7); border: 1px solid var(--line); color: var(--fg);
+              width: 42px; height: 42px; border-radius: 50%; font-size: 18px; cursor: pointer; }
 
   .stage { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center;
-           justify-content: center; padding: 0 20px; gap: 18px; }
-  .status { font-size: 14px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--c); }
+           justify-content: center; padding: 0 22px; gap: 20px; }
+  .pill { display: inline-flex; align-items: center; gap: 8px; background: rgba(255,255,255,.7);
+          border: 1px solid var(--line); border-radius: 999px; padding: 7px 14px; font-size: 13px; font-weight: 600; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c2); transition: background .4s; }
 
-  .bars { display: flex; align-items: center; justify-content: center; gap: 7px; height: 130px; }
-  .bars i { display: block; width: 8px; border-radius: 4px; background: var(--c);
-            transform: scaleY(.1); transition: background .4s; }
-  body[data-state="listening"] .bars i { animation: calm 1.8s ease-in-out infinite; animation-delay: calc(var(--i) * -0.15s); }
-  body[data-state="thinking"] .bars i { animation: pulse 1.2s ease-in-out infinite; animation-delay: calc(var(--i) * -0.08s); }
-  body[data-state="speaking"] .bars i { animation: talk .7s ease-in-out infinite; animation-delay: calc(var(--i) * -0.11s); }
-  @keyframes calm { 0%,100% { transform: scaleY(.18); } 50% { transform: scaleY(.55); } }
-  @keyframes pulse { 0%,100% { transform: scaleY(.12); } 50% { transform: scaleY(.3); } }
-  @keyframes talk { 0%,100% { transform: scaleY(.25); } 50% { transform: scaleY(1); } }
-  @media (prefers-reduced-motion: reduce) { .bars i { animation: none !important; transform: scaleY(.4); } }
+  .orbwrap { position: relative; width: 190px; height: 190px; flex: none; }
+  .glow { position: absolute; inset: -30px; border-radius: 50%; background: var(--glow); filter: blur(36px); transition: background .5s; }
+  .orb { position: absolute; inset: 0; border-radius: 50%;
+         background: radial-gradient(circle at 30% 28%, #fff 0%, var(--c1) 38%, var(--c2) 100%);
+         box-shadow: 0 18px 50px var(--glow); transition: background .5s; }
+  body[data-state="listening"] .orb { animation: morph 7s ease-in-out infinite, breathe 3.2s ease-in-out infinite; }
+  body[data-state="thinking"] .orb  { animation: morph 3.5s ease-in-out infinite, spin 9s linear infinite; }
+  body[data-state="speaking"] .orb  { animation: morph 2.6s ease-in-out infinite, pulse .9s ease-in-out infinite; }
+  @keyframes morph {
+    0%,100% { border-radius: 60% 40% 55% 45% / 55% 45% 55% 45%; }
+    50% { border-radius: 42% 58% 40% 60% / 50% 60% 40% 50%; }
+  }
+  @keyframes breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.06); } }
+  @keyframes pulse { 0%,100% { transform: scale(1); } 40% { transform: scale(1.1); } 70% { transform: scale(.97); } }
+  @keyframes spin { to { rotate: 360deg; } }
+  @media (prefers-reduced-motion: reduce) {
+    .orb, .bg i { animation: none !important; }
+  }
 
   .meter-wrap { width: min(260px, 70vw); }
-  .meter-label { font-size: 11px; color: var(--muted); text-align: center; margin-bottom: 6px; }
-  .meter { height: 6px; background: var(--card); border-radius: 3px; overflow: hidden; }
-  #meter { height: 100%; width: 0; background: var(--c); transition: width .1s linear; }
+  .meter-label { font-size: 12px; color: var(--muted); text-align: center; margin-bottom: 7px; }
+  .meter { height: 7px; background: rgba(255,255,255,.75); border-radius: 4px; overflow: hidden; border: 1px solid var(--line); }
+  #meter { height: 100%; width: 0; background: linear-gradient(90deg, var(--c1), var(--c2)); border-radius: 4px; transition: width .1s linear; }
 
-  .captions { width: min(560px, 100%); min-height: 110px; max-height: 30vh; overflow: auto;
-              text-align: center; font-size: 18px; line-height: 1.45; }
+  .captions { width: min(560px, 100%); min-height: 100px; max-height: 30vh; overflow: auto;
+              background: rgba(255,255,255,.62); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+              border: 1px solid rgba(255,255,255,.8); border-radius: 22px; padding: 16px 18px;
+              text-align: center; font-size: 18px; line-height: 1.45; box-shadow: 0 8px 30px rgba(120,100,160,.08); }
   #you { color: var(--muted); }
-  #ai { color: var(--fg); margin-top: 8px; }
+  #ai { color: var(--fg); margin-top: 6px; font-weight: 500; }
 
-  .bottom { display: flex; justify-content: center; padding: 10px 0 26px; }
-  .call { width: 78px; height: 78px; border-radius: 50%; border: none; cursor: pointer;
-          font-size: 15px; font-weight: 600; color: #101010; background: #2fbf71; }
-  .call.on { background: #e5484d; color: #fff; }
+  .bottom { display: flex; justify-content: center; padding: 10px 0 28px; }
+  .call { min-width: 170px; height: 58px; border-radius: 29px; border: none; cursor: pointer;
+          font-family: inherit; font-size: 16px; font-weight: 600; color: #fff; background: var(--fg);
+          box-shadow: 0 10px 28px rgba(42,39,51,.25); }
+  .call.on { background: #ef6b73; box-shadow: 0 10px 28px rgba(239,107,115,.35); }
 
   .drawer { position: fixed; left: 0; right: 0; bottom: 0; max-height: 80dvh; overflow: auto;
-            background: var(--card); border-top: 1px solid var(--line);
-            border-radius: 18px 18px 0 0; padding: 18px; z-index: 10;
-            transform: translateY(105%); transition: transform .25s; }
+            background: rgba(255,255,255,.96); border-top: 1px solid var(--line);
+            border-radius: 26px 26px 0 0; padding: 20px; z-index: 10;
+            box-shadow: 0 -10px 40px rgba(120,100,160,.15);
+            transform: translateY(105%); transition: transform .28s; }
   .drawer.open { transform: translateY(0); }
-  .drawer h3 { margin: 0 0 8px; font-size: 16px; }
-  .row { display: flex; align-items: center; justify-content: space-between; gap: 10px;
-         margin: 10px 0; font-size: 14px; }
-  input, select { background: var(--bg); color: var(--fg); border: 1px solid var(--line);
-                  border-radius: 8px; padding: 8px; font-size: 14px; }
-  input[type="number"] { width: 80px; }
-  .btn2 { background: var(--bg); color: var(--fg); border: 1px solid var(--line);
-          border-radius: 8px; padding: 9px 12px; font-size: 14px; cursor: pointer; }
-  #stats { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px;
+  .drawer h3 { margin: 0 0 8px; font-size: 17px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 11px 0; font-size: 14px; }
+  input, select { background: #fff; color: var(--fg); border: 1px solid var(--line);
+                  border-radius: 10px; padding: 9px; font-size: 14px; font-family: inherit; }
+  input[type="number"] { width: 82px; }
+  .btn2 { background: #fff; color: var(--fg); border: 1px solid var(--line); border-radius: 12px;
+          padding: 10px 14px; font-size: 14px; font-family: inherit; cursor: pointer; }
+  #stats { background: #faf8fc; border: 1px solid var(--line); border-radius: 10px; padding: 10px;
            font-size: 11px; max-height: 180px; overflow: auto; white-space: pre-wrap; margin: 8px 0; }
 </style>
 </head>
 <body data-state="idle">
-  <div class="flag">
-    <span style="background:#007a5e"></span><span style="background:#ce1126"></span><span style="background:#fcd116"></span>
-  </div>
-  <div class="top">
-    <div class="brand">VOICE ASSISTANT</div>
-    <button class="icon-btn" id="gear" aria-label="Settings">&#9881;</button>
-  </div>
+  <div class="bg"><i class="b1"></i><i class="b2"></i><i class="b3"></i><i class="b4"></i></div>
 
-  <div class="stage">
-    <div class="status" id="status">Tap Start</div>
-    <div class="bars" aria-hidden="true">
-      <i style="--i:0;height:30%"></i><i style="--i:1;height:45%"></i><i style="--i:2;height:60%"></i>
-      <i style="--i:3;height:75%"></i><i style="--i:4;height:90%"></i><i style="--i:5;height:100%"></i>
-      <i style="--i:6;height:90%"></i><i style="--i:7;height:75%"></i><i style="--i:8;height:60%"></i>
-      <i style="--i:9;height:45%"></i><i style="--i:10;height:30%"></i>
+  <div class="app">
+    <div class="top">
+      <div class="brand">Voice assistant</div>
+      <button class="icon-btn" id="gear" aria-label="Settings">&#9881;</button>
     </div>
-    <div class="meter-wrap">
-      <div class="meter-label">Finished speaking?</div>
-      <div class="meter"><div id="meter"></div></div>
-    </div>
-    <div class="captions"><div id="you"></div><div id="ai"></div></div>
-  </div>
 
-  <div class="bottom"><button class="call" id="btn">Start</button></div>
+    <div class="stage">
+      <div class="pill"><span class="dot"></span><span id="status">Tap Start</span></div>
+      <div class="orbwrap"><div class="glow"></div><div class="orb"></div></div>
+      <div class="meter-wrap">
+        <div class="meter-label">Finished speaking?</div>
+        <div class="meter"><div id="meter"></div></div>
+      </div>
+      <div class="captions"><div id="you"></div><div id="ai">Hello! How can I help you today? Press Start and just talk.</div></div>
+    </div>
+
+    <div class="bottom"><button class="call" id="btn">Start</button></div>
+  </div>
 
   <div class="drawer" id="drawer">
     <h3>Settings</h3>
@@ -142,6 +160,7 @@
     let heard = "", lastResultAt = 0, prevCount = 0, speechRunStart = 0;
     let history = [], cuts = 0, gaps = 0, turns = 0;
     let abortCtl = null, pendingSpeech = 0, streamDone = false, spokeFirst = false, info = null;
+    let greeted = false;
 
     const LABELS = { idle: "Tap Start", listening: "Listening", thinking: "Thinking", speaking: "Speaking" };
     function setState(s) { document.body.dataset.state = s; $("status").textContent = LABELS[s]; }
@@ -331,6 +350,24 @@
               " ms after you started talking");
     }
 
+    function greet() {
+      const text = "Hello! How can I help you today?";
+      busy = true;
+      turnDone = false;
+      setState("speaking");
+      $("ai").textContent = text;
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = "en-US";
+      const after = () => {
+        busy = false;
+        turnDone = true;
+        if (running) { setState("listening"); startRec(); }
+      };
+      u.onend = after;
+      u.onerror = after;
+      speechSynthesis.speak(u);
+    }
+
     $("btn").onclick = async () => {
       if (!running) {
         show("Loading...");
@@ -364,8 +401,8 @@
         $("btn").classList.add("on");
         $("you").textContent = "";
         $("ai").textContent = "";
-        setState("listening");
-        startRec();
+        if (!greeted) { greeted = true; greet(); }
+        else { setState("listening"); startRec(); }
       } else {
         running = false;
         $("btn").textContent = "Start";
