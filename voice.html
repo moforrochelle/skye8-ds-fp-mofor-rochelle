@@ -42,7 +42,7 @@
           border: 1px solid var(--line); border-radius: 999px; padding: 7px 14px; font-size: 13px; font-weight: 600; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c2); transition: background .4s; }
 
-  .orbwrap { position: relative; width: 190px; height: 190px; flex: none; }
+  .orbwrap { position: relative; width: 190px; height: 190px; flex: none; cursor: pointer; -webkit-tap-highlight-color: transparent; }
   .glow { position: absolute; inset: -30px; border-radius: 50%; background: var(--glow); filter: blur(36px); transition: background .5s; }
   .orb { position: absolute; inset: 0; border-radius: 50%;
          background: radial-gradient(circle at 30% 28%, #fff 0%, var(--c1) 38%, var(--c2) 100%);
@@ -73,8 +73,11 @@
   #you { color: var(--muted); }
   #ai { color: var(--fg); margin-top: 6px; font-weight: 500; }
 
-  .bottom { display: flex; justify-content: center; padding: 10px 0 28px; }
-  .call { min-width: 170px; height: 58px; border-radius: 29px; border: none; cursor: pointer;
+  .bottom { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 6px 20px 24px; }
+  .tog { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .tog input { width: 18px; height: 18px; accent-color: #7fd2b6; }
+  .hint { font-size: 12px; color: var(--muted); text-align: center; max-width: 320px; }
+  .call { min-width: 170px; height: 58px; border-radius: 29px; border: none; cursor: pointer; margin-top: 4px;
           font-family: inherit; font-size: 16px; font-weight: 600; color: #fff; background: var(--fg);
           box-shadow: 0 10px 28px rgba(42,39,51,.25); }
   .call.on { background: #ef6b73; box-shadow: 0 10px 28px rgba(239,107,115,.35); }
@@ -94,6 +97,16 @@
           padding: 10px 14px; font-size: 14px; font-family: inherit; cursor: pointer; }
   #stats { background: #faf8fc; border: 1px solid var(--line); border-radius: 10px; padding: 10px;
            font-size: 11px; max-height: 180px; overflow: auto; white-space: pre-wrap; margin: 8px 0; }
+
+  @media (max-width: 700px) {
+    .bg i { filter: blur(40px); }
+    .b3, .b4 { display: none; }
+    .glow { filter: blur(22px); inset: -20px; }
+    .captions { backdrop-filter: none; -webkit-backdrop-filter: none; background: rgba(255,255,255,.88); }
+    body[data-state="listening"] .orb { animation: breathe 3.2s ease-in-out infinite; }
+    body[data-state="thinking"] .orb  { animation: breathe 1.6s ease-in-out infinite; }
+    body[data-state="speaking"] .orb  { animation: pulse .9s ease-in-out infinite; }
+  }
 </style>
 </head>
 <body data-state="idle">
@@ -107,7 +120,7 @@
 
     <div class="stage">
       <div class="pill"><span class="dot"></span><span id="status">Tap Start</span></div>
-      <div class="orbwrap"><div class="glow"></div><div class="orb"></div></div>
+      <div class="orbwrap" id="orbtap"><div class="glow"></div><div class="orb"></div></div>
       <div class="meter-wrap">
         <div class="meter-label">Finished speaking?</div>
         <div class="meter"><div id="meter"></div></div>
@@ -115,7 +128,11 @@
       <div class="captions"><div id="you"></div><div id="ai">Hello! How can I help you today? Press Start and just talk.</div></div>
     </div>
 
-    <div class="bottom"><button class="call" id="btn">Start</button></div>
+    <div class="bottom">
+      <label class="tog"><input type="checkbox" id="intr"> <span>Let me interrupt by voice</span></label>
+      <div class="hint" id="hint">Tap the circle any time to interrupt.</div>
+      <button class="call" id="btn">Start</button>
+    </div>
   </div>
 
   <div class="drawer" id="drawer">
@@ -127,7 +144,7 @@
       </select></div>
     <div class="row"><span>Threshold</span><input id="thr" type="number" step="0.01" min="0.5" max="0.999" value="0.90"></div>
     <div class="row"><span>Minimum pause (s)</span><input id="floor" type="number" step="0.1" min="0.2" max="1.5" value="0.6"></div>
-    <div class="row"><label><input type="checkbox" id="intr"> Interruption (use headphones)</label></div>
+    <div class="row"><span>Voice interruption: speech needed (ms)</span><input id="hold" type="number" step="50" min="300" max="1500" value="600"></div>
     <div class="row"><label><input type="checkbox" id="loc"> Share my location (tick before Start)</label></div>
     <div class="row"><span>Cut-offs: <b id="cuts">0</b> &nbsp; Gaps: <b id="gaps">0</b> &nbsp; Turns: <b id="turns">0</b></span></div>
     <div class="row"><button class="btn2" id="cut">I was cut off</button><button class="btn2" id="gap">Gap too long</button></div>
@@ -146,22 +163,30 @@
       $("ai").textContent = "SCRIPT ERROR: " + msg + " (line " + line + ")";
     };
 
+    const isMobile = /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
+    $("intr").checked = !isMobile;
+    $("hint").textContent = isMobile
+      ? "Tap the circle any time to interrupt."
+      : "Speak over it or tap the circle to interrupt.";
+
+    const SPEECH_VOLUME = 0.85;
+
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     const rec = SR ? new SR() : { start() {}, abort() {} };
     rec.lang = "en-US";
     rec.interimResults = true;
-    rec.continuous = true;
+    rec.continuous = !isMobile;
     if (!SR) {
       $("ai").textContent = "This browser has no speech recognition. Please use Chrome.";
       $("btn").disabled = true;
     }
 
-    let M = null, vad = null;
+    let M = null, vad = null, vadOn = false;
     let running = false, busy = false, turnDone = true, interrupting = false;
-    let heard = "", lastResultAt = 0, prevCount = 0, speechRunStart = 0;
+    let heard = "", lastResultAt = 0, prevCount = 0, speechRunStart = 0, speakStartAt = 0;
     let history = [], cuts = 0, gaps = 0, turns = 0;
-    let abortCtl = null, pendingSpeech = 0, streamDone = false, spokeFirst = false, info = null;
-    let greeted = false;
+    let abortCtl = null, info = null, turnId = 0;
+    let greeted = false, revealTimer = null;
     let userLat = null, userLon = null;
 
     const LABELS = { idle: "Tap Start", listening: "Listening", thinking: "Thinking", speaking: "Speaking" };
@@ -170,6 +195,8 @@
     function addLine(msg) { $("stats").textContent = msg + "\n" + $("stats").textContent; }
     function resetTurn() { heard = ""; prevCount = 0; }
     function startRec() { resetTurn(); try { rec.start(); } catch (e) {} }
+    function clearReveal() { if (revealTimer) { clearInterval(revealTimer); revealTimer = null; } }
+    function holdMs() { return Math.max(300, parseFloat($("hold").value) || 600); }
 
     function score(x) {
       let s = 0;
@@ -248,7 +275,7 @@
       }
     }, 100);
 
-    async function streamReply(text, signal) {
+    async function streamReply(my, text, signal) {
       const user = { role: "user", parts: [{ text }] };
       const contents = [...history, user].slice(-7);
       const res = await fetch("/api/chat", {
@@ -283,56 +310,96 @@
           const parts = (j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || [];
           const piece = parts.map((p) => p.text || "").join("");
           if (!piece) continue;
-          if (!info.tTok) info.tTok = performance.now();
+          if (!my.tTok) my.tTok = performance.now();
           full += piece;
           sentenceBuf += piece;
           let m;
           while ((m = /^([\s\S]*?[.!?])\s+/.exec(sentenceBuf))) {
-            speakChunk(m[1]);
+            speakChunk(my, m[1]);
             sentenceBuf = sentenceBuf.slice(m[0].length);
           }
         }
       }
-      if (sentenceBuf.trim()) speakChunk(sentenceBuf);
-      history.push(user, { role: "model", parts: [{ text: full }] });
+      if (sentenceBuf.trim()) speakChunk(my, sentenceBuf);
+      if (!my.cancelled) history.push(user, { role: "model", parts: [{ text: full }] });
     }
 
-    function speakChunk(s) {
+    function speakChunk(my, s) {
       s = s.trim();
-      if (!s) return;
-      if (!info.tChunk) info.tChunk = performance.now();
-      info.reply += " " + s;
-      $("you").textContent = info.user;
-      $("ai").textContent = info.reply.trim();
+      if (!s || my.cancelled) return;
+      if (!my.tChunk) my.tChunk = performance.now();
+      const words = s.split(/\s+/);
       const u = new SpeechSynthesisUtterance(s);
       u.lang = "en-US";
-      pendingSpeech++;
+      u.volume = SPEECH_VOLUME;
+      my.pending++;
+      let gotBoundary = false;
+
+      function showPart(partial) {
+        if (my.cancelled) return;
+        $("ai").textContent = (my.shown ? my.shown + " " : "") + partial;
+      }
+
       u.onstart = () => {
-        if (spokeFirst) return;
-        spokeFirst = true;
-        setState("speaking");
-        const now = performance.now();
-        turns++;
-        $("turns").textContent = turns;
-        addLine(
-          "Turn " + turns + " [" + info.mode + "]: total " + Math.round(now - info.tWords) + " ms " +
-          "(endpoint wait " + Math.round(info.tFire - info.tWords) +
-          ", first token " + Math.round(info.tTok - info.tFire) +
-          ", first sentence ready " + Math.round(info.tChunk - info.tTok) +
-          ", speech start " + Math.round(now - info.tChunk) + ")"
-        );
+        if (my.cancelled) return;
+        speakStartAt = performance.now();
+        speechRunStart = 0;
+        $("you").textContent = my.user;
+        clearReveal();
+        let i = 0;
+        showPart(words[0]);
+        revealTimer = setInterval(() => {
+          if (gotBoundary) return;
+          i++;
+          if (i >= words.length) { clearReveal(); return; }
+          showPart(words.slice(0, i + 1).join(" "));
+        }, 340);
+        if (!my.spoke) {
+          my.spoke = true;
+          setState("speaking");
+          const now = performance.now();
+          turns++;
+          $("turns").textContent = turns;
+          addLine(
+            "Turn " + turns + " [" + my.mode + "]: total " + Math.round(now - my.tWords) + " ms " +
+            "(endpoint wait " + Math.round(my.tFire - my.tWords) +
+            ", first token " + Math.round(my.tTok - my.tFire) +
+            ", first sentence ready " + Math.round(my.tChunk - my.tTok) +
+            ", speech start " + Math.round(now - my.tChunk) + ")"
+          );
+        }
       };
-      const done = () => { pendingSpeech--; if (streamDone && pendingSpeech <= 0) finishTurn(); };
-      u.onend = done;
-      u.onerror = done;
+
+      u.onboundary = (e) => {
+        if (my.cancelled) return;
+        if (e.name && e.name !== "word") return;
+        gotBoundary = true;
+        const rest = s.slice(e.charIndex);
+        const m = rest.match(/^\S+/);
+        showPart(s.slice(0, e.charIndex + (m ? m[0].length : 0)));
+      };
+
+      const finish = () => {
+        if (!my.cancelled) {
+          clearReveal();
+          my.shown = (my.shown ? my.shown + " " : "") + s;
+          $("ai").textContent = my.shown;
+        }
+        my.pending--;
+        if (my.streamDone && my.pending <= 0) finishTurn(my);
+      };
+      u.onend = finish;
+      u.onerror = finish;
       speechSynthesis.speak(u);
     }
 
-    function finishTurn() {
+    function finishTurn(my) {
+      if (my && my.id !== turnId) return;
       if (turnDone) return;
       turnDone = true;
       busy = false;
       interrupting = false;
+      clearReveal();
       setState(running ? "listening" : "idle");
       if (running) startRec();
     }
@@ -341,31 +408,44 @@
       if (!heard || busy) return;
       busy = true;
       turnDone = false;
+      interrupting = false;
       setState("thinking");
-      info = { user: heard, reply: "", tWords: lastResultAt, tFire: performance.now(),
-               tTok: 0, tChunk: 0, mode: $("mode").value };
+      speakStartAt = performance.now();
+      speechRunStart = 0;
+      const my = { id: ++turnId, user: heard, shown: "", cancelled: false, pending: 0,
+                   streamDone: false, spoke: false, tWords: lastResultAt,
+                   tFire: performance.now(), tTok: 0, tChunk: 0, mode: $("mode").value };
+      info = my;
       resetTurn();
       rec.abort();
       abortCtl = new AbortController();
-      pendingSpeech = 0;
-      streamDone = false;
-      spokeFirst = false;
       try {
-        await streamReply(info.user, abortCtl.signal);
+        await streamReply(my, my.user, abortCtl.signal);
       } catch (err) {
         if (err.name !== "AbortError") show(err.message);
       }
-      streamDone = true;
-      if (pendingSpeech <= 0) finishTurn();
+      if (my.id !== turnId) return;
+      my.streamDone = true;
+      if (my.pending <= 0) finishTurn(my);
     }
 
-    function interrupt() {
+    function interrupt(held) {
+      if (interrupting || !info || turnDone) return;
       interrupting = true;
-      const t0 = speechRunStart || performance.now();
+      const my = info;
+      my.cancelled = true;
+      clearReveal();
       if (abortCtl) abortCtl.abort();
       speechSynthesis.cancel();
-      addLine("  INTERRUPTED: assistant stopped " + Math.round(performance.now() - t0) +
-              " ms after you started talking");
+      const said = $("ai").textContent.trim();
+      history.push({ role: "user", parts: [{ text: my.user }] },
+                   { role: "model", parts: [{ text: said || "(interrupted)" }] });
+      my.streamDone = true;
+      my.pending = 0;
+      addLine("  INTERRUPTED: assistant stopped after " + (held ? Math.round(held) + " ms of your speech" : "a tap"));
+      finishTurn(my);
+      $("you").textContent = "";
+      $("ai").textContent = "Go ahead, I'm listening.";
     }
 
     function greet() {
@@ -373,17 +453,58 @@
       busy = true;
       turnDone = false;
       setState("speaking");
-      $("ai").textContent = text;
       const u = new SpeechSynthesisUtterance(text);
       u.lang = "en-US";
+      u.volume = SPEECH_VOLUME;
+      u.onstart = () => { speakStartAt = performance.now(); speechRunStart = 0; $("ai").textContent = text; };
       const after = () => {
         busy = false;
         turnDone = true;
+        interrupting = false;
         if (running) { setState("listening"); startRec(); }
       };
       u.onend = after;
       u.onerror = after;
       speechSynthesis.speak(u);
+    }
+
+    async function applyVad() {
+      if (!running) return;
+      if ($("intr").checked) {
+        if (!vad) {
+          try {
+            vad = await window.vad.MicVAD.new({
+              baseAssetPath: "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/",
+              onnxWASMBasePath: "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/",
+              positiveSpeechThreshold: 0.85,
+              additionalAudioConstraints: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+              onFrameProcessed: (p) => {
+                const now = performance.now();
+                if (p.isSpeech > 0.85) {
+                  if (!speechRunStart) speechRunStart = now;
+                  const held = now - speechRunStart;
+                  if (running && busy && !interrupting && $("intr").checked &&
+                      now - speakStartAt > 600 && held >= holdMs()) {
+                    interrupt(held);
+                  }
+                } else if (p.isSpeech < 0.5) {
+                  speechRunStart = 0;
+                }
+              },
+            });
+          } catch (e) {
+            vad = null;
+            $("intr").checked = false;
+            $("hint").textContent = "Voice interruption is not available here. Tap the circle to interrupt.";
+            return;
+          }
+        }
+        if (!vadOn) { vad.start(); vadOn = true; }
+        $("hint").textContent = "Speak over it or tap the circle to interrupt.";
+      } else {
+        if (vad && vadOn) { vad.pause(); vadOn = false; }
+        $("hint").textContent = "Tap the circle any time to interrupt.";
+      }
     }
 
     $("loc").onchange = () => {
@@ -428,25 +549,6 @@
           show("Could not load the model file: " + e.message);
           return;
         }
-        if ($("intr").checked && !vad) {
-          try {
-            vad = await window.vad.MicVAD.new({
-              baseAssetPath: "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/",
-              onnxWASMBasePath: "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/",
-              positiveSpeechThreshold: 0.8,
-              onFrameProcessed: (p) => {
-                if (p.isSpeech > 0.5) { if (!speechRunStart) speechRunStart = performance.now(); }
-                else if (p.isSpeech < 0.3) { speechRunStart = 0; }
-              },
-              onSpeechRealStart: () => {
-                if (busy && !interrupting && $("intr").checked) interrupt();
-              },
-            });
-          } catch (e) {
-            show("Interruption unavailable. Continuing without it.");
-          }
-        }
-        if (vad && $("intr").checked) vad.start();
         running = true;
         $("btn").textContent = "End";
         $("btn").classList.add("on");
@@ -454,11 +556,15 @@
         $("ai").textContent = "";
         if (!greeted) { greeted = true; greet(); }
         else { setState("listening"); startRec(); }
+        applyVad();
       } else {
         running = false;
         $("btn").textContent = "Start";
         $("btn").classList.remove("on");
-        if (vad) vad.pause();
+        if (vad && vadOn) { vad.pause(); vadOn = false; }
+        if (info) info.cancelled = true;
+        turnId++;
+        clearReveal();
         if (abortCtl) abortCtl.abort();
         rec.abort();
         speechSynthesis.cancel();
@@ -470,6 +576,8 @@
       }
     };
 
+    $("intr").onchange = applyVad;
+    $("orbtap").onclick = () => { if (running && busy) interrupt(0); };
     $("gear").onclick = () => $("drawer").classList.toggle("open");
     $("close").onclick = () => $("drawer").classList.remove("open");
     $("cut").onclick = () => { cuts++; $("cuts").textContent = cuts; };
