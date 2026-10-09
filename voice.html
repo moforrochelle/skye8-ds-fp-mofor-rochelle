@@ -94,16 +94,6 @@
           padding: 10px 14px; font-size: 14px; font-family: inherit; cursor: pointer; }
   #stats { background: #faf8fc; border: 1px solid var(--line); border-radius: 10px; padding: 10px;
            font-size: 11px; max-height: 180px; overflow: auto; white-space: pre-wrap; margin: 8px 0; }
-
-  @media (max-width: 700px) {
-    .bg i { filter: blur(40px); }
-    .b3, .b4 { display: none; }
-    .glow { filter: blur(22px); inset: -20px; }
-    .captions { backdrop-filter: none; -webkit-backdrop-filter: none; background: rgba(255,255,255,.88); }
-    body[data-state="listening"] .orb { animation: breathe 3.2s ease-in-out infinite; }
-    body[data-state="thinking"] .orb  { animation: breathe 1.6s ease-in-out infinite; }
-    body[data-state="speaking"] .orb  { animation: pulse .9s ease-in-out infinite; }
-  }
 </style>
 </head>
 <body data-state="idle">
@@ -138,10 +128,10 @@
     <div class="row"><span>Threshold</span><input id="thr" type="number" step="0.01" min="0.5" max="0.999" value="0.90"></div>
     <div class="row"><span>Minimum pause (s)</span><input id="floor" type="number" step="0.1" min="0.2" max="1.5" value="0.6"></div>
     <div class="row"><label><input type="checkbox" id="intr"> Interruption (use headphones)</label></div>
+    <div class="row"><label><input type="checkbox" id="loc"> Share my location (tick before Start)</label></div>
     <div class="row"><span>Cut-offs: <b id="cuts">0</b> &nbsp; Gaps: <b id="gaps">0</b> &nbsp; Turns: <b id="turns">0</b></span></div>
     <div class="row"><button class="btn2" id="cut">I was cut off</button><button class="btn2" id="gap">Gap too long</button></div>
     <div class="row"><span>Pause: <span id="pz">0.0</span> s &nbsp; P(finished): <span id="prob">-</span></span></div>
-    <div class="row"><span>Recognizer restarts: <b id="rst">0</b></span></div>
     <pre id="stats"></pre>
     <div class="row"><button class="btn2" id="dl">Download log</button><button class="btn2" id="close">Close</button></div>
   </div>
@@ -168,17 +158,18 @@
 
     let M = null, vad = null;
     let running = false, busy = false, turnDone = true, interrupting = false;
-    let heard = "", carry = "", lastResultAt = 0, prevCount = 0, speechRunStart = 0;
-    let history = [], cuts = 0, gaps = 0, turns = 0, restarts = 0;
+    let heard = "", lastResultAt = 0, prevCount = 0, speechRunStart = 0;
+    let history = [], cuts = 0, gaps = 0, turns = 0;
     let abortCtl = null, pendingSpeech = 0, streamDone = false, spokeFirst = false, info = null;
     let greeted = false;
+    let userLat = null, userLon = null;
 
     const LABELS = { idle: "Tap Start", listening: "Listening", thinking: "Thinking", speaking: "Speaking" };
     function setState(s) { document.body.dataset.state = s; $("status").textContent = LABELS[s]; }
     function show(msg) { $("you").textContent = ""; $("ai").textContent = msg; }
     function addLine(msg) { $("stats").textContent = msg + "\n" + $("stats").textContent; }
-    function resetTurn() { heard = ""; carry = ""; prevCount = 0; }
-    function startRec(keep) { if (!keep) resetTurn(); try { rec.start(); } catch (e) {} }
+    function resetTurn() { heard = ""; prevCount = 0; }
+    function startRec() { resetTurn(); try { rec.start(); } catch (e) {} }
 
     function score(x) {
       let s = 0;
@@ -202,7 +193,7 @@
         if (last && tr.toLowerCase().startsWith(last.toLowerCase())) segs[segs.length - 1] = tr;
         else if (!last || !last.toLowerCase().startsWith(tr.toLowerCase())) segs.push(tr);
       }
-      const t = ((carry ? carry + " " : "") + segs.join(" ")).trim();
+      const t = segs.join(" ");
       if (!t || t === heard) return;
       prevCount = t.split(/\s+/).filter(Boolean).length;
       heard = t;
@@ -210,13 +201,13 @@
       $("you").textContent = heard;
       $("ai").textContent = "";
     };
-
     rec.onend = () => {
-      if (running && !busy) {
-        restarts++;
-        $("rst").textContent = restarts;
-        carry = heard;
-        startRec(true);
+      if (!running || busy) return;
+      if (heard) {
+        addLine("  browser ended listening; sending: " + heard);
+        endOfTurn();
+      } else {
+        startRec();
       }
     };
     rec.onerror = (e) => {
@@ -269,6 +260,8 @@
             parts: [{ text: "You are a voice assistant. Keep answers short (one or two sentences) unless the user asks for a long or detailed answer." }],
           },
           contents,
+          lat: userLat,
+          lon: userLon,
         }),
       });
       if (res.status === 429) throw new Error("Too many requests, please wait a few seconds.");
@@ -392,6 +385,39 @@
       u.onerror = after;
       speechSynthesis.speak(u);
     }
+
+    $("loc").onchange = () => {
+      if (!$("loc").checked) {
+        userLat = null;
+        userLon = null;
+        addLine("  location sharing off");
+        return;
+      }
+      if (!navigator.geolocation) {
+        $("loc").checked = false;
+        addLine("  this browser cannot share location");
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        async (pos) => {
+          userLat = Math.round(pos.coords.latitude * 100) / 100;
+          userLon = Math.round(pos.coords.longitude * 100) / 100;
+          let place = "";
+          try {
+            const r = await fetch("/api/locate?lat=" + userLat + "&lon=" + userLon);
+            if (r.ok) place = (await r.json()).place || "";
+          } catch (e) {}
+          addLine("  location shared: " + (place || "coordinates only"));
+        },
+        () => {
+          $("loc").checked = false;
+          userLat = null;
+          userLon = null;
+          addLine("  location was not shared (permission denied or unavailable)");
+        },
+        { enableHighAccuracy: false, timeout: 10000, maximumAge: 600000 }
+      );
+    };
 
     $("btn").onclick = async () => {
       if (!running) {
