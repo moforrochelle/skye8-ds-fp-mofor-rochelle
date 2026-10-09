@@ -91,6 +91,11 @@ async def chat(request: Request):
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+@app.api_route("/health", methods=["GET", "HEAD"])
+def health():
+    return {"ok": True}
+
+
 @app.get("/")
 def index():
     return FileResponse("voice.html")
