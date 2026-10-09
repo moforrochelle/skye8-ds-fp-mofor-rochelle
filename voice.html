@@ -183,9 +183,15 @@
 
     rec.onresult = (e) => {
       if (busy) return;
-      let t = "";
-      for (const r of e.results) t += r[0].transcript + " ";
-      t = t.trim();
+      const segs = [];
+      for (const r of e.results) {
+        const tr = r[0].transcript.trim();
+        if (!tr) continue;
+        const last = segs[segs.length - 1];
+        if (last && tr.toLowerCase().startsWith(last.toLowerCase())) segs[segs.length - 1] = tr;
+        else if (!last || !last.toLowerCase().startsWith(tr.toLowerCase())) segs.push(tr);
+      }
+      const t = segs.join(" ");
       if (!t || t === heard) return;
       prevCount = t.split(/\s+/).filter(Boolean).length;
       heard = t;
