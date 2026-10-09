@@ -1,12 +1,19 @@
 <!DOCTYPE html>
 <html>
 <body>
+  <h3>Stage A: naive voice assistant (1 second silence timer)</h3>
+  <input id="key" type="password" placeholder="Paste Gemini API key" size="40">
   <button id="btn">Start</button>
+  <button id="cut">I was cut off</button>
+  <button id="gap">Gap too long</button>
+  <p>Cut-offs: <span id="cuts">0</span> | Long gaps: <span id="gaps">0</span> | Turns: <span id="turns">0</span></p>
   <pre id="log"></pre>
+  <pre id="stats"></pre>
 
   <script>
-    const btn = document.getElementById("btn");
-    const log = document.getElementById("log");
+    const MODEL = "gemini-3.5-flash-lite";
+    const SILENCE_MS = 1000;
+    const $ = (id) => document.getElementById(id);
 
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     const rec = new SR();
@@ -14,20 +21,114 @@
     rec.interimResults = true;
     rec.continuous = true;
 
+    let running = false, busy = false, timer = null;
+    let heard = "", lastWordAt = 0;
+    let history = [], cuts = 0, gaps = 0, turns = 0;
+
+    function show(msg) { $("log").textContent = msg; }
+    function addLine(msg) { $("stats").textContent = msg + "\n" + $("stats").textContent; }
+    function startRec() { try { rec.start(); } catch (e) {} }
+
     rec.onresult = (e) => {
-      let text = "";
-      for (const r of e.results) text += r[0].transcript + " ";
-      log.textContent = text;
+      if (busy) return;
+      heard = "";
+      for (const r of e.results) heard += r[0].transcript + " ";
+      heard = heard.trim();
+      lastWordAt = performance.now();
+      show("You: " + heard);
+      clearTimeout(timer);
+      timer = setTimeout(endOfTurn, SILENCE_MS);
     };
 
+    rec.onend = () => { if (running && !busy) startRec(); };
     rec.onerror = (e) => {
-      log.textContent = "error: " + e.error;
+      if (e.error !== "no-speech" && e.error !== "aborted") show("mic error: " + e.error);
     };
 
-    btn.onclick = () => {
-      rec.start();
-      log.textContent = "listening...";
+    async function askModel(text) {
+      const user = { role: "user", parts: [{ text }] };
+      const contents = [...history, user].slice(-7);
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": $("key").value.trim(),
+          },
+          body: JSON.stringify({
+            systemInstruction: {
+              parts: [{ text: "You are a voice assistant. Answer in one or two short sentences." }],
+            },
+            contents,
+          }),
+        }
+      );
+      if (!res.ok) throw new Error("model error " + res.status + ": " + (await res.text()).slice(0, 300));
+      const data = await res.json();
+      const reply = data.candidates[0].content.parts.map((p) => p.text || "").join("").trim();
+      history.push(user, { role: "model", parts: [{ text: reply }] });
+      return reply;
+    }
+
+    async function endOfTurn() {
+      if (!heard || busy) return;
+      busy = true;
+      const text = heard;
+      heard = "";
+      const tWords = lastWordAt;
+      const tFire = performance.now();
+      rec.abort();
+      try {
+        const reply = await askModel(text);
+        const tLlm = performance.now();
+        if (!running) { busy = false; return; }
+        show("You: " + text + "\nAssistant: " + reply);
+        speak(reply, tWords, tFire, tLlm);
+      } catch (err) {
+        show("Error: " + err.message);
+        busy = false;
+        if (running) startRec();
+      }
+    }
+
+    function speak(reply, tWords, tFire, tLlm) {
+      const u = new SpeechSynthesisUtterance(reply);
+      u.lang = "en-US";
+      u.onstart = () => {
+        const now = performance.now();
+        turns++;
+        $("turns").textContent = turns;
+        addLine(
+          `Turn ${turns}: total ${Math.round(now - tWords)} ms ` +
+          `(silence wait ${Math.round(tFire - tWords)}, model ${Math.round(tLlm - tFire)}, speech start ${Math.round(now - tLlm)})`
+        );
+      };
+      u.onend = () => { busy = false; if (running) startRec(); };
+      u.onerror = u.onend;
+      speechSynthesis.speak(u);
+    }
+
+    $("btn").onclick = () => {
+      if (!running) {
+        if (!$("key").value.trim()) { show("Paste your API key first"); return; }
+        running = true;
+        $("btn").textContent = "Stop";
+        show("listening...");
+        startRec();
+      } else {
+        running = false;
+        $("btn").textContent = "Start";
+        clearTimeout(timer);
+        rec.abort();
+        speechSynthesis.cancel();
+        busy = false;
+        show("stopped");
+      }
     };
+
+    $("cut").onclick = () => { cuts++; $("cuts").textContent = cuts; };
+    $("gap").onclick = () => { gaps++; $("gaps").textContent = gaps; };
   </script>
 </body>
 </html>

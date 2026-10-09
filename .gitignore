@@ -3,3 +3,4 @@
 *.csv
 *.wav
 data/
+__pycache__/

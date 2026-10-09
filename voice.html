@@ -1,44 +1,141 @@
 <!DOCTYPE html>
-<html>
-<body>
-  <h3>Live voice assistant</h3>
-  <input id="key" type="password" placeholder="Paste Gemini API key" size="40"><br>
-  Mode:
-  <select id="mode">
-    <option value="model">Trained endpointing model</option>
-    <option value="timer">1-second silence timer (baseline)</option>
-  </select>
-  threshold <input id="thr" type="number" step="0.01" min="0.5" max="0.999" value="0.90" style="width:70px">
-  min pause (s) <input id="floor" type="number" step="0.1" min="0.2" max="1.5" value="0.6" style="width:60px">
-  <label><input type="checkbox" id="intr"> interruption (tick before Start; use headphones)</label><br><br>
-  <button id="btn">Start</button>
-  <button id="cut">I was cut off</button>
-  <button id="gap">Gap too long</button>
-  <p>Cut-offs: <span id="cuts">0</span> | Long gaps: <span id="gaps">0</span> | Turns: <span id="turns">0</span></p>
-  <p>Pause: <span id="pz">0.0</span> s | P(finished): <span id="prob">-</span></p>
-  <pre id="log">page loaded, but the script has not started</pre>
-  <pre id="stats"></pre>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#101010">
+<title>Voice assistant</title>
+<style>
+  :root { --bg:#101010; --fg:#f2f2f2; --muted:#8a8a8a; --card:#1a1a1a; --line:#2c2c2c; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column; height: 100dvh;
+    padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom);
+  }
+  body[data-state="idle"] { --c: #5c5c5c; }
+  body[data-state="listening"] { --c: #2fbf71; }
+  body[data-state="thinking"] { --c: #f0a030; }
+  body[data-state="speaking"] { --c: #4a90ff; }
+
+  .flag { display: flex; height: 4px; }
+  .flag span { flex: 1; }
+  .top { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; }
+  .brand { font-size: 13px; color: var(--muted); letter-spacing: .12em; }
+  .icon-btn { background: none; border: 1px solid var(--line); color: var(--fg);
+              width: 40px; height: 40px; border-radius: 50%; font-size: 18px; cursor: pointer; }
+
+  .stage { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center;
+           justify-content: center; padding: 0 20px; gap: 18px; }
+  .status { font-size: 14px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--c); }
+
+  .bars { display: flex; align-items: center; justify-content: center; gap: 7px; height: 130px; }
+  .bars i { display: block; width: 8px; border-radius: 4px; background: var(--c);
+            transform: scaleY(.1); transition: background .4s; }
+  body[data-state="listening"] .bars i { animation: calm 1.8s ease-in-out infinite; animation-delay: calc(var(--i) * -0.15s); }
+  body[data-state="thinking"] .bars i { animation: pulse 1.2s ease-in-out infinite; animation-delay: calc(var(--i) * -0.08s); }
+  body[data-state="speaking"] .bars i { animation: talk .7s ease-in-out infinite; animation-delay: calc(var(--i) * -0.11s); }
+  @keyframes calm { 0%,100% { transform: scaleY(.18); } 50% { transform: scaleY(.55); } }
+  @keyframes pulse { 0%,100% { transform: scaleY(.12); } 50% { transform: scaleY(.3); } }
+  @keyframes talk { 0%,100% { transform: scaleY(.25); } 50% { transform: scaleY(1); } }
+  @media (prefers-reduced-motion: reduce) { .bars i { animation: none !important; transform: scaleY(.4); } }
+
+  .meter-wrap { width: min(260px, 70vw); }
+  .meter-label { font-size: 11px; color: var(--muted); text-align: center; margin-bottom: 6px; }
+  .meter { height: 6px; background: var(--card); border-radius: 3px; overflow: hidden; }
+  #meter { height: 100%; width: 0; background: var(--c); transition: width .1s linear; }
+
+  .captions { width: min(560px, 100%); min-height: 110px; max-height: 30vh; overflow: auto;
+              text-align: center; font-size: 18px; line-height: 1.45; }
+  #you { color: var(--muted); }
+  #ai { color: var(--fg); margin-top: 8px; }
+
+  .bottom { display: flex; justify-content: center; padding: 10px 0 26px; }
+  .call { width: 78px; height: 78px; border-radius: 50%; border: none; cursor: pointer;
+          font-size: 15px; font-weight: 600; color: #101010; background: #2fbf71; }
+  .call.on { background: #e5484d; color: #fff; }
+
+  .drawer { position: fixed; left: 0; right: 0; bottom: 0; max-height: 80dvh; overflow: auto;
+            background: var(--card); border-top: 1px solid var(--line);
+            border-radius: 18px 18px 0 0; padding: 18px; z-index: 10;
+            transform: translateY(105%); transition: transform .25s; }
+  .drawer.open { transform: translateY(0); }
+  .drawer h3 { margin: 0 0 8px; font-size: 16px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+         margin: 10px 0; font-size: 14px; }
+  input, select { background: var(--bg); color: var(--fg); border: 1px solid var(--line);
+                  border-radius: 8px; padding: 8px; font-size: 14px; }
+  input[type="number"] { width: 80px; }
+  .btn2 { background: var(--bg); color: var(--fg); border: 1px solid var(--line);
+          border-radius: 8px; padding: 9px 12px; font-size: 14px; cursor: pointer; }
+  #stats { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px;
+           font-size: 11px; max-height: 180px; overflow: auto; white-space: pre-wrap; margin: 8px 0; }
+</style>
+</head>
+<body data-state="idle">
+  <div class="flag">
+    <span style="background:#007a5e"></span><span style="background:#ce1126"></span><span style="background:#fcd116"></span>
+  </div>
+  <div class="top">
+    <div class="brand">VOICE ASSISTANT</div>
+    <button class="icon-btn" id="gear" aria-label="Settings">&#9881;</button>
+  </div>
+
+  <div class="stage">
+    <div class="status" id="status">Tap Start</div>
+    <div class="bars" aria-hidden="true">
+      <i style="--i:0;height:30%"></i><i style="--i:1;height:45%"></i><i style="--i:2;height:60%"></i>
+      <i style="--i:3;height:75%"></i><i style="--i:4;height:90%"></i><i style="--i:5;height:100%"></i>
+      <i style="--i:6;height:90%"></i><i style="--i:7;height:75%"></i><i style="--i:8;height:60%"></i>
+      <i style="--i:9;height:45%"></i><i style="--i:10;height:30%"></i>
+    </div>
+    <div class="meter-wrap">
+      <div class="meter-label">Finished speaking?</div>
+      <div class="meter"><div id="meter"></div></div>
+    </div>
+    <div class="captions"><div id="you"></div><div id="ai"></div></div>
+  </div>
+
+  <div class="bottom"><button class="call" id="btn">Start</button></div>
+
+  <div class="drawer" id="drawer">
+    <h3>Settings</h3>
+    <div class="row"><span>Mode</span>
+      <select id="mode">
+        <option value="model">Trained endpointing model</option>
+        <option value="timer">1-second silence timer</option>
+      </select></div>
+    <div class="row"><span>Threshold</span><input id="thr" type="number" step="0.01" min="0.5" max="0.999" value="0.90"></div>
+    <div class="row"><span>Minimum pause (s)</span><input id="floor" type="number" step="0.1" min="0.2" max="1.5" value="0.6"></div>
+    <div class="row"><label><input type="checkbox" id="intr"> Interruption (use headphones)</label></div>
+    <div class="row"><span>Cut-offs: <b id="cuts">0</b> &nbsp; Gaps: <b id="gaps">0</b> &nbsp; Turns: <b id="turns">0</b></span></div>
+    <div class="row"><button class="btn2" id="cut">I was cut off</button><button class="btn2" id="gap">Gap too long</button></div>
+    <div class="row"><span>Pause: <span id="pz">0.0</span> s &nbsp; P(finished): <span id="prob">-</span></span></div>
+    <pre id="stats"></pre>
+    <div class="row"><button class="btn2" id="dl">Download log</button><button class="btn2" id="close">Close</button></div>
+  </div>
 
   <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.wasm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/bundle.min.js"></script>
 
   <script>
-    window.onerror = function (msg, src, line) {
-      document.getElementById("log").textContent = "SCRIPT ERROR: " + msg + " (line " + line + ")";
-    };
-  </script>
-
-  <script>
-    const MODEL = "gemini-3.5-flash-lite";
     const $ = (id) => document.getElementById(id);
-    $("log").textContent = "script started. Paste your key and click Start.";
+
+    window.onerror = function (msg, src, line) {
+      $("ai").textContent = "SCRIPT ERROR: " + msg + " (line " + line + ")";
+    };
 
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { $("log").textContent = "This browser has no speech recognition. Use Chrome."; }
-    const rec = new SR();
+    const rec = SR ? new SR() : { start() {}, abort() {} };
     rec.lang = "en-US";
     rec.interimResults = true;
     rec.continuous = true;
+    if (!SR) {
+      $("ai").textContent = "This browser has no speech recognition. Please use Chrome.";
+      $("btn").disabled = true;
+    }
 
     let M = null, vad = null;
     let running = false, busy = false, turnDone = true, interrupting = false;
@@ -46,7 +143,9 @@
     let history = [], cuts = 0, gaps = 0, turns = 0;
     let abortCtl = null, pendingSpeech = 0, streamDone = false, spokeFirst = false, info = null;
 
-    function show(msg) { $("log").textContent = msg; }
+    const LABELS = { idle: "Tap Start", listening: "Listening", thinking: "Thinking", speaking: "Speaking" };
+    function setState(s) { document.body.dataset.state = s; $("status").textContent = LABELS[s]; }
+    function show(msg) { $("you").textContent = ""; $("ai").textContent = msg; }
     function addLine(msg) { $("stats").textContent = msg + "\n" + $("stats").textContent; }
     function resetTurn() { heard = ""; prevCount = 0; }
     function startRec() { resetTurn(); try { rec.start(); } catch (e) {} }
@@ -72,24 +171,24 @@
       prevCount = t.split(/\s+/).filter(Boolean).length;
       heard = t;
       lastResultAt = performance.now();
-      show("You: " + heard);
+      $("you").textContent = heard;
+      $("ai").textContent = "";
     };
     rec.onend = () => { if (running && !busy) startRec(); };
     rec.onerror = (e) => {
-      if (e.error !== "no-speech" && e.error !== "aborted") show("mic error: " + e.error);
+      if (e.error !== "no-speech" && e.error !== "aborted") show("Microphone problem: " + e.error);
     };
 
-    // Decides every 100 ms whether the speaker has finished.
     setInterval(() => {
-      if (!running || busy || !heard) return;
+      if (!running || busy || !heard) { $("meter").style.width = "0%"; return; }
       const pause = (performance.now() - lastResultAt) / 1000;
       $("pz").textContent = pause.toFixed(1);
       if ($("mode").value === "timer") {
+        $("meter").style.width = Math.min(pause / 1.0, 1) * 100 + "%";
         if (pause >= 1.0) endOfTurn();
         return;
       }
-      const floor = parseFloat($("floor").value) || 0.6;
-      if (pause < floor) return;
+      if (pause < 0.2) { $("meter").style.width = "0%"; return; }
       const words = heard.toLowerCase().replace(/[^a-z' ]/g, "").split(/\s+/).filter(Boolean);
       const last = words[words.length - 1] || "";
       const x = [
@@ -101,6 +200,9 @@
       ];
       const p = score(x);
       $("prob").textContent = p.toFixed(3);
+      $("meter").style.width = Math.round(p * 100) + "%";
+      const floor = parseFloat($("floor").value) || 0.6;
+      if (pause < floor) return;
       const thr = parseFloat($("thr").value) || 0.9;
       const modelSaysDone = p >= thr && (prevCount >= 3 || pause >= 1.0);
       if (modelSaysDone || pause >= 1.5) {
@@ -111,28 +213,22 @@
       }
     }, 100);
 
-    // Streams the reply and speaks each sentence as soon as it is complete.
     async function streamReply(text, signal) {
       const user = { role: "user", parts: [{ text }] };
       const contents = [...history, user].slice(-7);
-      const res = await fetch(
-        "https://generativelanguage.googleapis.com/v1beta/models/" + MODEL + ":streamGenerateContent?alt=sse",
-        {
-          method: "POST",
-          signal,
-          headers: {
-            "Content-Type": "application/json",
-            "x-goog-api-key": $("key").value.trim(),
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        signal,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [{ text: "You are a voice assistant. Keep answers short (one or two sentences) unless the user asks for a long or detailed answer." }],
           },
-          body: JSON.stringify({
-            systemInstruction: {
-              parts: [{ text: "You are a voice assistant. Keep answers short (one or two sentences) unless the user asks for a long or detailed answer." }],
-            },
-            contents,
-          }),
-        }
-      );
-      if (!res.ok) throw new Error("model error " + res.status + ": " + (await res.text()).slice(0, 300));
+          contents,
+        }),
+      });
+      if (res.status === 429) throw new Error("Too many requests, please wait a few seconds.");
+      if (!res.ok) throw new Error("Something went wrong (" + res.status + "). Please try again.");
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       let buf = "", full = "", sentenceBuf = "";
@@ -169,13 +265,15 @@
       if (!s) return;
       if (!info.tChunk) info.tChunk = performance.now();
       info.reply += " " + s;
-      show("You: " + info.user + "\nAssistant:" + info.reply);
+      $("you").textContent = info.user;
+      $("ai").textContent = info.reply.trim();
       const u = new SpeechSynthesisUtterance(s);
       u.lang = "en-US";
       pendingSpeech++;
       u.onstart = () => {
         if (spokeFirst) return;
         spokeFirst = true;
+        setState("speaking");
         const now = performance.now();
         turns++;
         $("turns").textContent = turns;
@@ -198,6 +296,7 @@
       turnDone = true;
       busy = false;
       interrupting = false;
+      setState(running ? "listening" : "idle");
       if (running) startRec();
     }
 
@@ -205,6 +304,7 @@
       if (!heard || busy) return;
       busy = true;
       turnDone = false;
+      setState("thinking");
       info = { user: heard, reply: "", tWords: lastResultAt, tFire: performance.now(),
                tTok: 0, tChunk: 0, mode: $("mode").value };
       resetTurn();
@@ -216,7 +316,7 @@
       try {
         await streamReply(info.user, abortCtl.signal);
       } catch (err) {
-        if (err.name !== "AbortError") show("Error: " + err.message);
+        if (err.name !== "AbortError") show(err.message);
       }
       streamDone = true;
       if (pendingSpeech <= 0) finishTurn();
@@ -233,12 +333,11 @@
 
     $("btn").onclick = async () => {
       if (!running) {
-        if (!$("key").value.trim()) { show("Paste your API key first"); return; }
-        show("loading...");
+        show("Loading...");
         try {
-          if (!M) M = await (await fetch("results/endpoint_model.json")).json();
+          if (!M) M = await (await fetch("/results/endpoint_model.json")).json();
         } catch (e) {
-          show("Could not load results/endpoint_model.json: " + e.message);
+          show("Could not load the model file: " + e.message);
           return;
         }
         if ($("intr").checked && !vad) {
@@ -256,17 +355,21 @@
               },
             });
           } catch (e) {
-            show("Interruption unavailable (" + e.message + "). Continuing without it.");
+            show("Interruption unavailable. Continuing without it.");
           }
         }
         if (vad && $("intr").checked) vad.start();
         running = true;
-        $("btn").textContent = "Stop";
-        show("listening...");
+        $("btn").textContent = "End";
+        $("btn").classList.add("on");
+        $("you").textContent = "";
+        $("ai").textContent = "";
+        setState("listening");
         startRec();
       } else {
         running = false;
         $("btn").textContent = "Start";
+        $("btn").classList.remove("on");
         if (vad) vad.pause();
         if (abortCtl) abortCtl.abort();
         rec.abort();
@@ -274,12 +377,22 @@
         busy = false;
         turnDone = true;
         interrupting = false;
-        show("stopped");
+        $("meter").style.width = "0%";
+        setState("idle");
       }
     };
 
+    $("gear").onclick = () => $("drawer").classList.toggle("open");
+    $("close").onclick = () => $("drawer").classList.remove("open");
     $("cut").onclick = () => { cuts++; $("cuts").textContent = cuts; };
     $("gap").onclick = () => { gaps++; $("gaps").textContent = gaps; };
+    $("dl").onclick = () => {
+      const blob = new Blob([$("stats").textContent], { type: "text/plain" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "session-log.txt";
+      a.click();
+    };
   </script>
 </body>
 </html>
