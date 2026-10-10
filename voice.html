@@ -172,10 +172,6 @@
     const SPEECH_VOLUME = 0.85;
 
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    const rec = SR ? new SR() : { start() {}, abort() {} };
-    rec.lang = "en-US";
-    rec.interimResults = true;
-    rec.continuous = !isMobile;
     if (!SR) {
       $("ai").textContent = "This browser has no speech recognition. Please use Chrome.";
       $("btn").disabled = true;
@@ -188,15 +184,125 @@
     let abortCtl = null, info = null, turnId = 0;
     let greeted = false, revealTimer = null;
     let userLat = null, userLon = null;
+    let rec = null, recActive = false, recTry = 0, everListened = false, lastFresh = 0;
 
     const LABELS = { idle: "Tap Start", listening: "Listening", thinking: "Thinking", speaking: "Speaking" };
     function setState(s) { document.body.dataset.state = s; $("status").textContent = LABELS[s]; }
     function show(msg) { $("you").textContent = ""; $("ai").textContent = msg; }
     function addLine(msg) { $("stats").textContent = msg + "\n" + $("stats").textContent; }
     function resetTurn() { heard = ""; prevCount = 0; }
-    function startRec() { resetTurn(); try { rec.start(); } catch (e) {} }
     function clearReveal() { if (revealTimer) { clearInterval(revealTimer); revealTimer = null; } }
     function holdMs() { return Math.max(300, parseFloat($("hold").value) || 600); }
+
+    // Makes a brand new speech listener. Old listeners are ignored once replaced.
+    function makeRec() {
+      if (!SR) return { start() {}, abort() {} };
+      const r = new SR();
+      r.lang = "en-US";
+      r.interimResults = true;
+      r.continuous = !isMobile;
+      r.onstart = () => {
+        if (r !== rec) return;
+        recActive = true;
+        everListened = true;
+      };
+      r.onresult = (e) => {
+        if (r !== rec || busy) return;
+        const segs = [];
+        for (const res of e.results) {
+          const tr = res[0].transcript.trim();
+          if (!tr) continue;
+          const last = segs[segs.length - 1];
+          if (last && tr.toLowerCase().startsWith(last.toLowerCase())) segs[segs.length - 1] = tr;
+          else if (!last || !last.toLowerCase().startsWith(tr.toLowerCase())) segs.push(tr);
+        }
+        const t = segs.join(" ");
+        if (!t || t === heard) return;
+        prevCount = t.split(/\s+/).filter(Boolean).length;
+        heard = t;
+        lastResultAt = performance.now();
+        $("you").textContent = heard;
+        $("ai").textContent = "";
+      };
+      r.onend = () => {
+        if (r !== rec) return;
+        recActive = false;
+        if (!running || busy) return;
+        if (heard) {
+          addLine("  browser ended listening; sending: " + heard);
+          endOfTurn();
+        } else {
+          startRec();
+        }
+      };
+      r.onerror = (e) => {
+        if (r !== rec) return;
+        if (e.error !== "no-speech" && e.error !== "aborted") show("Microphone problem: " + e.error);
+      };
+      return r;
+    }
+
+    // Throws away the current listener and prepares a fresh one.
+    function freshRec() {
+      const old = rec;
+      rec = makeRec();
+      recActive = false;
+      lastFresh = performance.now();
+      try { if (old) old.abort(); } catch (e) {}
+    }
+
+    function startRec() {
+      resetTurn();
+      recTry = performance.now();
+      try {
+        rec.start();
+      } catch (e) {
+        if (performance.now() - lastFresh > 3000) {
+          addLine("  microphone listener was stuck; starting a new one");
+          freshRec();
+          recTry = performance.now();
+          try { rec.start(); } catch (x) {}
+        }
+      }
+    }
+
+    rec = makeRec();
+
+    // Speaks one piece of text. Keeps a reference so Chrome cannot throw the speech
+    // away early, and notices when Chrome forgets to say that the speech has finished.
+    const liveUtts = new Set();
+    function say(u, onDone) {
+      let done = false, started = false;
+      const begun = performance.now();
+      let last = begun;
+      const end = () => {
+        if (done) return;
+        done = true;
+        clearInterval(guard);
+        liveUtts.delete(u);
+        onDone();
+      };
+      const onStartOrig = u.onstart;
+      u.onstart = (e) => { started = true; last = performance.now(); if (onStartOrig) onStartOrig(e); };
+      const onBoundaryOrig = u.onboundary;
+      u.onboundary = (e) => { last = performance.now(); if (onBoundaryOrig) onBoundaryOrig(e); };
+      u.onend = end;
+      u.onerror = end;
+      const guard = setInterval(() => {
+        const now = performance.now();
+        const silent = !speechSynthesis.speaking;
+        if (started && silent && !speechSynthesis.pending && now - last > 1500) {
+          addLine("  speech finished without a signal; carrying on");
+          end();
+        } else if (!started && silent && now - begun > 4000) {
+          addLine("  speech never started; carrying on");
+          speechSynthesis.cancel();
+          end();
+        }
+      }, 500);
+      liveUtts.add(u);
+      speechSynthesis.speak(u);
+    }
 
     function score(x) {
       let s = 0;
@@ -210,36 +316,16 @@
       return 1 / (1 + Math.exp(-(M.base + M.learning_rate * s)));
     }
 
-    rec.onresult = (e) => {
-      if (busy) return;
-      const segs = [];
-      for (const r of e.results) {
-        const tr = r[0].transcript.trim();
-        if (!tr) continue;
-        const last = segs[segs.length - 1];
-        if (last && tr.toLowerCase().startsWith(last.toLowerCase())) segs[segs.length - 1] = tr;
-        else if (!last || !last.toLowerCase().startsWith(tr.toLowerCase())) segs.push(tr);
-      }
-      const t = segs.join(" ");
-      if (!t || t === heard) return;
-      prevCount = t.split(/\s+/).filter(Boolean).length;
-      heard = t;
-      lastResultAt = performance.now();
-      $("you").textContent = heard;
-      $("ai").textContent = "";
-    };
-    rec.onend = () => {
-      if (!running || busy) return;
-      if (heard) {
-        addLine("  browser ended listening; sending: " + heard);
-        endOfTurn();
-      } else {
+    // If listening has quietly died while we are waiting for the user, replace it.
+    setInterval(() => {
+      if (!running || busy || recActive) return;
+      const patience = everListened ? 2500 : 15000;
+      if (performance.now() - recTry > patience) {
+        addLine("  listening had stopped; restarting");
+        freshRec();
         startRec();
       }
-    };
-    rec.onerror = (e) => {
-      if (e.error !== "no-speech" && e.error !== "aborted") show("Microphone problem: " + e.error);
-    };
+    }, 700);
 
     setInterval(() => {
       if (!running || busy || !heard) { $("meter").style.width = "0%"; return; }
@@ -388,9 +474,7 @@
         my.pending--;
         if (my.streamDone && my.pending <= 0) finishTurn(my);
       };
-      u.onend = finish;
-      u.onerror = finish;
-      speechSynthesis.speak(u);
+      say(u, finish);
     }
 
     function finishTurn(my) {
@@ -417,13 +501,18 @@
                    tFire: performance.now(), tTok: 0, tChunk: 0, mode: $("mode").value };
       info = my;
       resetTurn();
-      rec.abort();
-      abortCtl = new AbortController();
+      try { rec.abort(); } catch (e) {}
+      const ctl = new AbortController();
+      abortCtl = ctl;
+      let timedOut = false;
+      const timer = setTimeout(() => { timedOut = true; ctl.abort(); }, 25000);
       try {
-        await streamReply(my, my.user, abortCtl.signal);
+        await streamReply(my, my.user, ctl.signal);
       } catch (err) {
-        if (err.name !== "AbortError") show(err.message);
+        if (timedOut) show("The reply took too long. Please try again.");
+        else if (err.name !== "AbortError") show(err.message);
       }
+      clearTimeout(timer);
       if (my.id !== turnId) return;
       my.streamDone = true;
       if (my.pending <= 0) finishTurn(my);
@@ -463,9 +552,7 @@
         interrupting = false;
         if (running) { setState("listening"); startRec(); }
       };
-      u.onend = after;
-      u.onerror = after;
-      speechSynthesis.speak(u);
+      say(u, after);
     }
 
     async function applyVad() {
@@ -566,11 +653,12 @@
         turnId++;
         clearReveal();
         if (abortCtl) abortCtl.abort();
-        rec.abort();
+        freshRec();
         speechSynthesis.cancel();
         busy = false;
         turnDone = true;
         interrupting = false;
+        resetTurn();
         $("meter").style.width = "0%";
         setState("idle");
       }
